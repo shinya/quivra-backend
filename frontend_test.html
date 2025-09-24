@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Quivra WebSocket Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        #messages { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Quivra WebSocket Connection Test</h1>
+
+    <div id="status" class="status info">Connecting...</div>
+
+    <h3>Messages:</h3>
+    <div id="messages"></div>
+
+    <h3>Test Controls:</h3>
+    <button onclick="sendJoinRoom()">Send Join Room</button>
+    <button onclick="sendBuzzIn()">Send Buzz In</button>
+    <button onclick="sendStartGame()">Send Start Game</button>
+
+    <script>
+        const status = document.getElementById('status');
+        const messages = document.getElementById('messages');
+        let ws;
+        let roomId = 'TEST123'; // 実際のルームIDに変更してください
+
+        function addMessage(text, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `status ${type}`;
+            div.textContent = new Date().toLocaleTimeString() + ': ' + text;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function connectWebSocket() {
+            addMessage('Attempting to connect to ws://localhost:8080/ws...');
+
+            ws = new WebSocket('ws://localhost:8080/ws');
+
+            ws.onopen = function(event) {
+                status.textContent = 'Connected!';
+                status.className = 'status success';
+                addMessage('WebSocket connected successfully!', 'success');
+
+                // 自動的にjoin-roomメッセージを送信
+                sendJoinRoom();
+            };
+
+            ws.onmessage = function(event) {
+                addMessage('Received: ' + event.data, 'info');
+            };
+
+            ws.onerror = function(error) {
+                status.textContent = 'Connection Error';
+                status.className = 'status error';
+                addMessage('WebSocket error: ' + error, 'error');
+            };
+
+            ws.onclose = function(event) {
+                status.textContent = 'Disconnected';
+                status.className = 'status error';
+                addMessage(`WebSocket closed: ${event.code} - ${event.reason}`, 'error');
+            };
+        }
+
+        function sendJoinRoom() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const message = {
+                    event: 'join-room',
+                    data: {
+                        roomId: roomId,
+                        playerName: 'TestPlayer'
+                    }
+                };
+                ws.send(JSON.stringify(message));
+                addMessage('Sent: ' + JSON.stringify(message), 'info');
+            } else {
+                addMessage('WebSocket not connected', 'error');
+            }
+        }
+
+        function sendBuzzIn() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const message = {
+                    event: 'buzz-in',
+                    data: {
+                        roomId: roomId
+                    }
+                };
+                ws.send(JSON.stringify(message));
+                addMessage('Sent: ' + JSON.stringify(message), 'info');
+            } else {
+                addMessage('WebSocket not connected', 'error');
+            }
+        }
+
+        function sendStartGame() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const message = {
+                    event: 'start-game',
+                    data: {
+                        roomId: roomId
+                    }
+                };
+                ws.send(JSON.stringify(message));
+                addMessage('Sent: ' + JSON.stringify(message), 'info');
+            } else {
+                addMessage('WebSocket not connected', 'error');
+            }
+        }
+
+        // ページ読み込み時に自動接続
+        window.onload = function() {
+            connectWebSocket();
+        };
+    </script>
+</body>
+</html>

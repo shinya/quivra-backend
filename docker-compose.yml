@@ -1,0 +1,36 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - '8080:8080'
+    environment:
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=quivra
+      - DB_PASSWORD=password
+      - DB_NAME=quivra
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: quivra
+      MYSQL_USER: quivra
+      MYSQL_PASSWORD: password
+    ports:
+      - '3306:3306'
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/migrations.sql:/docker-entrypoint-initdb.d/01-migrations.sql
+      - ./database/sample_data.sql:/docker-entrypoint-initdb.d/02-sample_data.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+volumes:
+  mysql_data:
