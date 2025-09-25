@@ -1,7 +1,7 @@
 version: '3.8'
 services:
   app:
-    image: golang:1.21-alpine
+    build: .
     ports:
       - '8080:8080'
     environment:
@@ -11,11 +11,8 @@ services:
       - DB_PASSWORD=password
       - DB_NAME=quivra
     depends_on:
-      - mysql
-    volumes:
-      - .:/app
-    working_dir: /app
-    command: sh -c "go mod tidy && go run main.go"
+      mysql:
+        condition: service_healthy
 
   mysql:
     image: mysql:8.0
@@ -24,12 +21,22 @@ services:
       MYSQL_DATABASE: quivra
       MYSQL_USER: quivra
       MYSQL_PASSWORD: password
+      TZ: Asia/Tokyo
     ports:
       - '3306:3306'
     volumes:
       - mysql_data:/var/lib/mysql
       - ./database/migrations.sql:/docker-entrypoint-initdb.d/01-migrations.sql
       - ./database/sample_data.sql:/docker-entrypoint-initdb.d/02-sample_data.sql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-time-zone='+09:00'
+      --sql-mode=STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
 
 volumes:
   mysql_data:

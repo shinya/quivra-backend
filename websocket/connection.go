@@ -176,20 +176,15 @@ func (c *Connection) WritePump() {
 
 	log.Printf("WebSocket WritePump started")
 
-	for {
-		select {
-		case message, ok := <-c.Send:
-			if !ok {
-				log.Printf("WebSocket send channel closed")
-				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			log.Printf("WebSocket sending message: %s", string(message))
-			if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
-				log.Printf("WebSocket write error: %v", err)
-				return
-			}
+	// WebSocketのWritePumpはチャンネルが閉じられるまでメッセージを待機
+	for message := range c.Send {
+		log.Printf("WebSocket sending message: %s", string(message))
+		if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
+			log.Printf("WebSocket write error: %v", err)
+			return
 		}
 	}
+
+	log.Printf("WebSocket send channel closed")
+	c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 }

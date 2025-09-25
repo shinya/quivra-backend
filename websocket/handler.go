@@ -86,12 +86,14 @@ func (wsh *WSHandler) handleJoinRoom(conn *Connection, data interface{}) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		log.Printf("Error marshaling join room data: %v", err)
+		wsh.sendError(conn, "Invalid message format")
 		return
 	}
 
 	var joinData models.JoinRoomData
 	if err := json.Unmarshal(jsonData, &joinData); err != nil {
 		log.Printf("Error unmarshaling join room data: %v", err)
+		wsh.sendError(conn, "Invalid message format")
 		return
 	}
 
@@ -99,12 +101,19 @@ func (wsh *WSHandler) handleJoinRoom(conn *Connection, data interface{}) {
 	player, err := wsh.roomService.AddPlayer(joinData.RoomID, joinData.PlayerName)
 	if err != nil {
 		log.Printf("Error adding player to room: %v", err)
+		wsh.sendError(conn, "Room not found or player name already exists")
 		return
 	}
 
 	// 接続情報を更新
 	conn.PlayerID = player.ID
 	conn.RoomID = joinData.RoomID
+
+	// 成功メッセージを送信
+	wsh.sendSuccess(conn, "Successfully joined room", map[string]interface{}{
+		"playerId": player.ID,
+		"roomId":   joinData.RoomID,
+	})
 
 	// ルーム状態を更新して全プレイヤーに送信
 	wsh.broadcastRoomUpdate(joinData.RoomID)
@@ -314,4 +323,41 @@ func (wsh *WSHandler) broadcastRoomUpdate(roomID string) {
 		Event: "room-updated",
 		Data:  updateData,
 	})
+}
+
+// sendError エラーメッセージを送信
+func (wsh *WSHandler) sendError(conn *Connection, message string) {
+	errorMsg := models.WSMessage{
+		Event: "error",
+		Data: map[string]interface{}{
+			"message": message,
+		},
+	}
+
+	msgBytes, err := json.Marshal(errorMsg)
+	if err != nil {
+		log.Printf("Error marshaling error message: %v", err)
+		return
+	}
+
+	conn.Send <- msgBytes
+}
+
+// sendSuccess 成功メッセージを送信
+func (wsh *WSHandler) sendSuccess(conn *Connection, message string, data map[string]interface{}) {
+	successMsg := models.WSMessage{
+		Event: "success",
+		Data: map[string]interface{}{
+			"message": message,
+			"data":    data,
+		},
+	}
+
+	msgBytes, err := json.Marshal(successMsg)
+	if err != nil {
+		log.Printf("Error marshaling success message: %v", err)
+		return
+	}
+
+	conn.Send <- msgBytes
 }
