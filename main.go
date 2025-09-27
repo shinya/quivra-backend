@@ -30,13 +30,14 @@ func main() {
 	questionService := services.NewQuestionService(db)
 	gameService := services.NewGameService(db)
 	buzzManager := services.NewBuzzManager()
+	buzzQueueService := services.NewBuzzQueueService(db)
 
 	// WebSocket Hubを初期化
 	hub := websocket.NewHub()
 	go hub.Run()
 
 	// WebSocketハンドラーを初期化
-	wsHandler := websocket.NewWSHandler(hub, roomService, questionService, gameService, buzzManager)
+	wsHandler := websocket.NewWSHandler(hub, roomService, questionService, gameService, buzzManager, buzzQueueService)
 
 	// HTTPハンドラーを初期化
 	roomHandler := handlers.NewRoomHandler(roomService)
@@ -64,7 +65,9 @@ func main() {
 	{
 		// ルーム関連
 		api.POST("/rooms", roomHandler.CreateRoom)
+		api.GET("/rooms", roomHandler.GetPublicRooms)
 		api.GET("/rooms/:roomId", roomHandler.GetRoom)
+		api.GET("/rooms/:roomId/ranking", roomHandler.GetRoomRanking)
 		api.POST("/rooms/join", roomHandler.JoinRoom)
 
 		// 問題関連

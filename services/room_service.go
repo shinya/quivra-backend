@@ -20,27 +20,38 @@ func NewRoomService(db *database.DB) *RoomService {
 }
 
 // CreateRoom ルームを作成
-func (rs *RoomService) CreateRoom(name string) (*models.Room, error) {
+func (rs *RoomService) CreateRoom(name string, isPublic bool, creatorName string) (*models.Room, error) {
 	roomID := generateRoomID()
+	creatorID := generatePlayerID()
 
-	query := `INSERT INTO rooms (id, name, status) VALUES (?, ?, 'waiting')`
-	_, err := rs.db.Exec(query, roomID, name)
+	// ルーム作成
+	query := `INSERT INTO rooms (id, name, status, is_public, created_by) VALUES (?, ?, 'waiting', ?, ?)`
+	_, err := rs.db.Exec(query, roomID, name, isPublic, creatorID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create room: %w", err)
 	}
 
+	// 作成者を管理者として追加
+	playerQuery := `INSERT INTO players (id, room_id, name, score, is_admin) VALUES (?, ?, ?, 0, TRUE)`
+	_, err = rs.db.Exec(playerQuery, creatorID, roomID, creatorName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add creator as admin: %w", err)
+	}
+
 	return &models.Room{
-		ID:     roomID,
-		Name:   name,
-		Status: "waiting",
+		ID:        roomID,
+		Name:      name,
+		Status:    "waiting",
+		IsPublic:  isPublic,
+		CreatedBy: creatorID,
 	}, nil
 }
 
 // GetRoom ルーム情報を取得
 func (rs *RoomService) GetRoom(roomID string) (*models.Room, error) {
 	var room models.Room
-	query := `SELECT id, name, created_at, status FROM rooms WHERE id = ?`
-	err := rs.db.QueryRow(query, roomID).Scan(&room.ID, &room.Name, &room.CreatedAt, &room.Status)
+	query := `SELECT id, name, created_at, status, is_public, created_by FROM rooms WHERE id = ?`
+	err := rs.db.QueryRow(query, roomID).Scan(&room.ID, &room.Name, &room.CreatedAt, &room.Status, &room.IsPublic, &room.CreatedBy)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("room not found")
@@ -60,7 +71,7 @@ func (rs *RoomService) GetRoom(roomID string) (*models.Room, error) {
 
 // GetRoomPlayers ルームのプレイヤー一覧を取得
 func (rs *RoomService) GetRoomPlayers(roomID string) ([]models.Player, error) {
-	query := `SELECT id, room_id, name, score, joined_at FROM players WHERE room_id = ? ORDER BY joined_at`
+	query := `SELECT id, room_id, name, score, joined_at, is_admin FROM players WHERE room_id = ? ORDER BY joined_at`
 	rows, err := rs.db.Query(query, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query players: %w", err)
@@ -70,7 +81,7 @@ func (rs *RoomService) GetRoomPlayers(roomID string) ([]models.Player, error) {
 	var players []models.Player
 	for rows.Next() {
 		var player models.Player
-		err := rows.Scan(&player.ID, &player.RoomID, &player.Name, &player.Score, &player.JoinedAt)
+		err := rows.Scan(&player.ID, &player.RoomID, &player.Name, &player.Score, &player.JoinedAt, &player.IsAdmin)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan player: %w", err)
 		}
@@ -101,17 +112,18 @@ func (rs *RoomService) AddPlayer(roomID, playerName string) (*models.Player, err
 	}
 
 	playerID := generatePlayerID()
-	query := `INSERT INTO players (id, room_id, name, score) VALUES (?, ?, ?, 0)`
+	query := `INSERT INTO players (id, room_id, name, score, is_admin) VALUES (?, ?, ?, 0, FALSE)`
 	_, err = rs.db.Exec(query, playerID, roomID, playerName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add player: %w", err)
 	}
 
 	return &models.Player{
-		ID:     playerID,
-		RoomID: roomID,
-		Name:   playerName,
-		Score:  0,
+		ID:      playerID,
+		RoomID:  roomID,
+		Name:    playerName,
+		Score:   0,
+		IsAdmin: false,
 	}, nil
 }
 
@@ -145,6 +157,74 @@ func generateRoomID() string {
 		result.WriteByte(charset[rand.Intn(len(charset))])
 	}
 	return result.String()
+}
+
+// GetPublicRooms 公開ルーム一覧を取得
+func (rs *RoomService) GetPublicRooms() ([]models.Room, error) {
+	query := `SELECT id, name, created_at, status, is_public, created_by FROM rooms WHERE is_public = TRUE AND status = 'waiting' ORDER BY created_at DESC`
+	rows, err := rs.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query public rooms: %w", err)
+	}
+	defer rows.Close()
+
+	var rooms []models.Room
+	for rows.Next() {
+		var room models.Room
+		err := rows.Scan(&room.ID, &room.Name, &room.CreatedAt, &room.Status, &room.IsPublic, &room.CreatedBy)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan room: %w", err)
+		}
+
+		// プレイヤー数も取得
+		players, err := rs.GetRoomPlayers(room.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get room players: %w", err)
+		}
+		room.Players = players
+		rooms = append(rooms, room)
+	}
+
+	return rooms, nil
+}
+
+// IsPlayerAdmin プレイヤーが管理者かチェック
+func (rs *RoomService) IsPlayerAdmin(roomID, playerID string) (bool, error) {
+	query := `SELECT is_admin FROM players WHERE room_id = ? AND id = ?`
+	var isAdmin bool
+	err := rs.db.QueryRow(query, roomID, playerID).Scan(&isAdmin)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, fmt.Errorf("player not found")
+		}
+		return false, fmt.Errorf("failed to check admin status: %w", err)
+	}
+	return isAdmin, nil
+}
+
+// GetRoomRanking ルームのランキングを取得
+func (rs *RoomService) GetRoomRanking(roomID string) ([]models.RoomRanking, error) {
+	query := `SELECT id, name, score FROM players WHERE room_id = ? ORDER BY score DESC, joined_at ASC`
+	rows, err := rs.db.Query(query, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query ranking: %w", err)
+	}
+	defer rows.Close()
+
+	var rankings []models.RoomRanking
+	rank := 1
+	for rows.Next() {
+		var ranking models.RoomRanking
+		err := rows.Scan(&ranking.PlayerID, &ranking.Name, &ranking.Score)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan ranking: %w", err)
+		}
+		ranking.Rank = rank
+		rankings = append(rankings, ranking)
+		rank++
+	}
+
+	return rankings, nil
 }
 
 // generatePlayerID UUIDを生成

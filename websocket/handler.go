@@ -23,20 +23,22 @@ var upgrader = websocket.Upgrader{
 }
 
 type WSHandler struct {
-	hub             *Hub
-	roomService     *services.RoomService
-	questionService *services.QuestionService
-	gameService     *services.GameService
-	buzzManager     *services.BuzzManager
+	hub              *Hub
+	roomService      *services.RoomService
+	questionService  *services.QuestionService
+	gameService      *services.GameService
+	buzzManager      *services.BuzzManager
+	buzzQueueService *services.BuzzQueueService
 }
 
-func NewWSHandler(hub *Hub, roomService *services.RoomService, questionService *services.QuestionService, gameService *services.GameService, buzzManager *services.BuzzManager) *WSHandler {
+func NewWSHandler(hub *Hub, roomService *services.RoomService, questionService *services.QuestionService, gameService *services.GameService, buzzManager *services.BuzzManager, buzzQueueService *services.BuzzQueueService) *WSHandler {
 	return &WSHandler{
-		hub:             hub,
-		roomService:     roomService,
-		questionService: questionService,
-		gameService:     gameService,
-		buzzManager:     buzzManager,
+		hub:              hub,
+		roomService:      roomService,
+		questionService:  questionService,
+		gameService:      gameService,
+		buzzManager:      buzzManager,
+		buzzQueueService: buzzQueueService,
 	}
 }
 
@@ -76,6 +78,12 @@ func (wsh *WSHandler) HandleMessage(conn *Connection, msg models.WSMessage) {
 		wsh.handleSubmitAnswer(conn, msg.Data)
 	case "start-game":
 		wsh.handleStartGame(conn, msg.Data)
+	case "judge-answer":
+		wsh.handleJudgeAnswer(conn, msg.Data)
+	case "reset-queue":
+		wsh.handleResetQueue(conn, msg.Data)
+	case "end-game":
+		wsh.handleEndGame(conn, msg.Data)
 	default:
 		log.Printf("Unknown event: %s", msg.Event)
 	}
@@ -132,36 +140,49 @@ func (wsh *WSHandler) handleBuzzIn(conn *Connection, data interface{}) {
 		return
 	}
 
-	// 早押しを試行
-	success := wsh.buzzManager.TryBuzz(buzzData.RoomID, conn.PlayerID)
-
-	// 結果を送信
-	result := models.BuzzResultData{
-		Success: success,
+	// 回答キューに追加
+	err = wsh.buzzQueueService.AddToQueue(buzzData.RoomID, conn.PlayerID)
+	if err != nil {
+		log.Printf("Error adding to queue: %v", err)
+		wsh.sendError(conn, "Failed to add to buzz queue")
+		return
 	}
 
-	if success {
-		// ゲームセッションで早押しプレイヤーを設定
-		session, err := wsh.gameService.GetActiveGameSession(buzzData.RoomID)
-		if err == nil {
-			wsh.gameService.SetBuzzedPlayer(session.ID, conn.PlayerID)
-		}
+	// キューを取得して全プレイヤーに送信
+	queue, err := wsh.buzzQueueService.GetQueue(buzzData.RoomID)
+	if err != nil {
+		log.Printf("Error getting queue: %v", err)
+		return
+	}
 
-		// プレイヤー情報を取得
-		players, err := wsh.roomService.GetRoomPlayers(buzzData.RoomID)
-		if err == nil {
-			for _, player := range players {
-				if player.ID == conn.PlayerID {
-					result.BuzzedPlayer = &player
-					break
-				}
+	// プレイヤー情報を取得
+	players, err := wsh.roomService.GetRoomPlayers(buzzData.RoomID)
+	if err != nil {
+		log.Printf("Error getting players: %v", err)
+		return
+	}
+
+	// キューにプレイヤー情報を追加
+	var queueWithPlayers []map[string]interface{}
+	for _, buzz := range queue {
+		for _, player := range players {
+			if player.ID == buzz.PlayerID {
+				queueWithPlayers = append(queueWithPlayers, map[string]interface{}{
+					"player_id": buzz.PlayerID,
+					"name":      player.Name,
+					"buzzed_at": buzz.BuzzedAt,
+				})
+				break
 			}
 		}
 	}
 
+	// キュー更新を全プレイヤーに送信
 	wsh.hub.SendToRoom(buzzData.RoomID, models.WSMessage{
-		Event: "buzz-result",
-		Data:  result,
+		Event: "queue-updated",
+		Data: map[string]interface{}{
+			"queue": queueWithPlayers,
+		},
 	})
 }
 
@@ -360,4 +381,161 @@ func (wsh *WSHandler) sendSuccess(conn *Connection, message string, data map[str
 	}
 
 	conn.Send <- msgBytes
+}
+
+// handleJudgeAnswer 管理者による回答判定
+func (wsh *WSHandler) handleJudgeAnswer(conn *Connection, data interface{}) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Error marshaling judge answer data: %v", err)
+		return
+	}
+
+	var judgeData struct {
+		RoomID   string `json:"room_id"`
+		Correct  bool   `json:"correct"`
+		PlayerID string `json:"player_id"`
+	}
+	if err := json.Unmarshal(jsonData, &judgeData); err != nil {
+		log.Printf("Error unmarshaling judge answer data: %v", err)
+		return
+	}
+
+	// 管理者権限チェック
+	isAdmin, err := wsh.roomService.IsPlayerAdmin(judgeData.RoomID, conn.PlayerID)
+	if err != nil || !isAdmin {
+		wsh.sendError(conn, "Admin privileges required")
+		return
+	}
+
+	// 次の回答者を取得
+	nextPlayer, err := wsh.buzzQueueService.GetNextPlayer(judgeData.RoomID)
+	if err != nil {
+		log.Printf("Error getting next player: %v", err)
+		return
+	}
+
+	// 判定されたプレイヤーがキューにいるかチェック
+	if nextPlayer.PlayerID != judgeData.PlayerID {
+		wsh.sendError(conn, "Player not in queue or not next in line")
+		return
+	}
+
+	if judgeData.Correct {
+		// 正解の場合：ポイントを付与
+		players, err := wsh.roomService.GetRoomPlayers(judgeData.RoomID)
+		if err == nil {
+			for _, player := range players {
+				if player.ID == judgeData.PlayerID {
+					newScore := player.Score + 10 // 基本ポイント
+					wsh.roomService.UpdatePlayerScore(player.ID, newScore)
+					break
+				}
+			}
+		}
+
+		// キューをクリア
+		wsh.buzzQueueService.ClearQueue(judgeData.RoomID)
+	} else {
+		// 不正解の場合：次のプレイヤーに移る
+		wsh.buzzQueueService.RemoveFromQueue(judgeData.RoomID, judgeData.PlayerID)
+	}
+
+	// 結果を全プレイヤーに送信
+	wsh.hub.SendToRoom(judgeData.RoomID, models.WSMessage{
+		Event: "judge-result",
+		Data: map[string]interface{}{
+			"correct":   judgeData.Correct,
+			"player_id": judgeData.PlayerID,
+		},
+	})
+
+	// ルーム状態を更新
+	wsh.broadcastRoomUpdate(judgeData.RoomID)
+}
+
+// handleResetQueue キューリセット（管理者のみ）
+func (wsh *WSHandler) handleResetQueue(conn *Connection, data interface{}) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Error marshaling reset queue data: %v", err)
+		return
+	}
+
+	var resetData struct {
+		RoomID string `json:"room_id"`
+	}
+	if err := json.Unmarshal(jsonData, &resetData); err != nil {
+		log.Printf("Error unmarshaling reset queue data: %v", err)
+		return
+	}
+
+	// 管理者権限チェック
+	isAdmin, err := wsh.roomService.IsPlayerAdmin(resetData.RoomID, conn.PlayerID)
+	if err != nil || !isAdmin {
+		wsh.sendError(conn, "Admin privileges required")
+		return
+	}
+
+	// キューをクリア
+	err = wsh.buzzQueueService.ClearQueue(resetData.RoomID)
+	if err != nil {
+		log.Printf("Error clearing queue: %v", err)
+		wsh.sendError(conn, "Failed to reset queue")
+		return
+	}
+
+	// リセット完了を全プレイヤーに送信
+	wsh.hub.SendToRoom(resetData.RoomID, models.WSMessage{
+		Event: "queue-reset",
+		Data: map[string]interface{}{
+			"message": "Queue has been reset",
+		},
+	})
+}
+
+// handleEndGame ゲーム終了（管理者のみ）
+func (wsh *WSHandler) handleEndGame(conn *Connection, data interface{}) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Error marshaling end game data: %v", err)
+		return
+	}
+
+	var endData struct {
+		RoomID string `json:"room_id"`
+	}
+	if err := json.Unmarshal(jsonData, &endData); err != nil {
+		log.Printf("Error unmarshaling end game data: %v", err)
+		return
+	}
+
+	// 管理者権限チェック
+	isAdmin, err := wsh.roomService.IsPlayerAdmin(endData.RoomID, conn.PlayerID)
+	if err != nil || !isAdmin {
+		wsh.sendError(conn, "Admin privileges required")
+		return
+	}
+
+	// ルーム状態を終了に更新
+	err = wsh.roomService.UpdateRoomStatus(endData.RoomID, "finished")
+	if err != nil {
+		log.Printf("Error updating room status: %v", err)
+		return
+	}
+
+	// ランキングを取得
+	ranking, err := wsh.roomService.GetRoomRanking(endData.RoomID)
+	if err != nil {
+		log.Printf("Error getting ranking: %v", err)
+		return
+	}
+
+	// ゲーム終了とランキングを全プレイヤーに送信
+	wsh.hub.SendToRoom(endData.RoomID, models.WSMessage{
+		Event: "game-ended",
+		Data: map[string]interface{}{
+			"ranking": ranking,
+		},
+	})
 }
