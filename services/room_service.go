@@ -227,6 +227,82 @@ func (rs *RoomService) GetRoomRanking(roomID string) ([]models.RoomRanking, erro
 	return rankings, nil
 }
 
+// ResetAllData 全データをリセット（管理者向け）
+func (rs *RoomService) ResetAllData() error {
+	// 外部キー制約のため、削除順序に注意
+	// 1. buzz_queue テーブルをクリア
+	_, err := rs.db.Exec("DELETE FROM buzz_queue")
+	if err != nil {
+		return fmt.Errorf("failed to clear buzz_queue: %w", err)
+	}
+
+	// 2. game_sessions テーブルをクリア
+	_, err = rs.db.Exec("DELETE FROM game_sessions")
+	if err != nil {
+		return fmt.Errorf("failed to clear game_sessions: %w", err)
+	}
+
+	// 3. players テーブルをクリア
+	_, err = rs.db.Exec("DELETE FROM players")
+	if err != nil {
+		return fmt.Errorf("failed to clear players: %w", err)
+	}
+
+	// 4. rooms テーブルをクリア
+	_, err = rs.db.Exec("DELETE FROM rooms")
+	if err != nil {
+		return fmt.Errorf("failed to clear rooms: %w", err)
+	}
+
+	// 5. questions テーブルをクリア（オプション）
+	_, err = rs.db.Exec("DELETE FROM questions")
+	if err != nil {
+		return fmt.Errorf("failed to clear questions: %w", err)
+	}
+
+	// 6. サンプルデータを再挿入
+	err = rs.insertSampleData()
+	if err != nil {
+		return fmt.Errorf("failed to insert sample data: %w", err)
+	}
+
+	return nil
+}
+
+// insertSampleData サンプルデータを挿入
+func (rs *RoomService) insertSampleData() error {
+	// サンプル問題を挿入
+	sampleQuestions := []struct {
+		question   string
+		answer     string
+		category   string
+		difficulty string
+	}{
+		{"日本の首都は？", "東京", "地理", "easy"},
+		{"1+1は？", "2", "数学", "easy"},
+		{"Go言語の作者は？", "ロブ・パイク", "プログラミング", "medium"},
+		{"世界で最も高い山は？", "エベレスト", "地理", "easy"},
+		{"2の3乗は？", "8", "数学", "medium"},
+		{"HTTPのデフォルトポートは？", "80", "プログラミング", "medium"},
+		{"光の速度は？", "約30万km/s", "科学", "hard"},
+		{"日本の国花は？", "桜", "文化", "easy"},
+		{"Pythonの作者は？", "グイド・ヴァン・ロッサム", "プログラミング", "medium"},
+		{"地球の衛星は？", "月", "科学", "easy"},
+	}
+
+	for _, q := range sampleQuestions {
+		_, err := rs.db.Exec(
+			"INSERT INTO questions (question, answer, category, difficulty) VALUES (?, ?, ?, ?)",
+			q.question, q.answer, q.category, q.difficulty,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert sample question: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // generatePlayerID UUIDを生成
 func generatePlayerID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())

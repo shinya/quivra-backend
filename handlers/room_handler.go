@@ -113,3 +113,24 @@ func (rh *RoomHandler) GetRoomRanking(c *gin.Context) {
 		"ranking": ranking,
 	})
 }
+
+// ResetAllData 全データリセット（管理者向け）
+func (rh *RoomHandler) ResetAllData(c *gin.Context) {
+	// 管理者権限チェック（簡単な認証としてAPIキーを使用）
+	apiKey := c.GetHeader("X-Admin-Key")
+	if apiKey != "admin-reset-key-2025" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	// 全データをリセット
+	err := rh.roomService.ResetAllData()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "All data has been reset successfully",
+	})
+}

@@ -70,6 +70,9 @@ func main() {
 		api.GET("/rooms/:roomId/ranking", roomHandler.GetRoomRanking)
 		api.POST("/rooms/join", roomHandler.JoinRoom)
 
+		// 管理者向けエンドポイント
+		api.POST("/admin/reset", roomHandler.ResetAllData)
+
 		// 問題関連
 		api.POST("/questions", questionHandler.CreateQuestion)
 		api.GET("/questions", questionHandler.GetQuestions)
