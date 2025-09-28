@@ -105,9 +105,10 @@ func (rs *RoomService) AddPlayer(roomID, playerName string) (*models.Player, err
 		return nil, fmt.Errorf("failed to get existing players: %w", err)
 	}
 
+	// 既存のプレイヤーがいる場合はそのプレイヤー情報を返す
 	for _, player := range players {
 		if player.Name == playerName {
-			return nil, fmt.Errorf("player name already exists")
+			return &player, nil
 		}
 	}
 
